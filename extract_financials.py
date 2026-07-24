@@ -18,6 +18,7 @@ Usage:
 """
 
 import sys
+import re
 import json
 import anthropic
 
@@ -66,45 +67,71 @@ Rules:
 """
 
 
-def find_real_statement(full_text: str, heading: str, window: int = 3500) -> str:
+def find_real_statement(full_text: str, heading_variations: list, window: int = 3500) -> str:
     """
-    Annual reports mention statement titles multiple times: once in the
-    table of contents, once as the real table, sometimes again in
-    narrative text discussing it, and sometimes again in footnotes. A
-    loose check like "is there a $ sign nearby" isn't reliable enough -
-    ordinary paragraphs can mention dollar figures too, and can end up
-    being matched before the real table ever appears.
-
-    A much more reliable fingerprint: every real statement table shows a
-    date header ("Year Ended December 31," or "As of December 31,")
-    immediately under its title. Plain narrative paragraphs that merely
-    reference a statement's name never have this. We check for that
-    instead.
+    Different companies title the same statement differently - e.g. Apple
+    says "Consolidated Statements of Operations" where Alphabet says
+    "Consolidated Statements of Income." This function tries a whole list
+    of known variations, case-insensitively, and returns the first real
+    match it finds (using the same "does it have a date header nearby"
+    fingerprint as before to skip table-of-contents mentions).
     """
-    search_from = 0
-    while True:
-        idx = full_text.find(heading, search_from)
-        if idx == -1:
-            return ""  # heading not found anywhere in the document
-        chunk = full_text[idx: idx + window]
-        if "Year Ended" in chunk[:200] or "As of December" in chunk[:200]:
-            return chunk
-        search_from = idx + len(heading)
+    for heading in heading_variations:
+        pattern = re.compile(re.escape(heading), re.IGNORECASE)
+        search_from = 0
+        while True:
+            match = pattern.search(full_text, search_from)
+            if not match:
+                break  # this wording not found, try the next variation
+            idx = match.start()
+            chunk = full_text[idx: idx + window]
+            fingerprint = chunk[:250].lower()
+            if any(marker in fingerprint for marker in
+                   ["year ended", "years ended", "as of december", "as of june",
+                    "as of september", "fiscal year ended", "months ended"]):
+                return chunk
+            search_from = idx + len(heading)
+    return ""  # none of the known variations matched a real table
 
 
 def build_financial_statements_excerpt(full_text: str) -> str:
-    """Pull just the three core statements out of a much larger document."""
+    """
+    Pull just the three core statements out of a much larger document.
+    Each statement has a list of common real-world headings, ordered
+    from most to least common, since different companies name them
+    differently.
+    """
+    income_statement_headings = [
+        "Consolidated Statements of Income",
+        "Consolidated Statements of Operations",
+        "Consolidated Income Statements",
+        "Income Statements",
+    ]
+    balance_sheet_headings = [
+        "Consolidated Balance Sheets",
+        "Consolidated Balance Sheet",
+        "Balance Sheets",
+    ]
+    cash_flow_headings = [
+        "Consolidated Statements of Cash Flows",
+        "Consolidated Statement of Cash Flows",
+        "Cash Flows Statements",
+        "Statements of Cash Flows",
+    ]
+
     sections = [
-        find_real_statement(full_text, "Consolidated Statements of Income"),
-        find_real_statement(full_text, "Consolidated Balance Sheets"),
-        find_real_statement(full_text, "Consolidated Statements of Cash Flows"),
+        find_real_statement(full_text, income_statement_headings),
+        find_real_statement(full_text, balance_sheet_headings),
+        find_real_statement(full_text, cash_flow_headings),
     ]
     excerpt = "\n\n".join(s for s in sections if s)
     if not excerpt:
         raise ValueError(
             "Could not locate any of the three core financial statements in this "
-            "document. The heading text may be worded differently in this report - "
-            "open clean_text.txt and search manually to find the right heading."
+            "document using any known heading wording. This company may use a "
+            "wording we haven't seen yet - open clean_text.txt, search manually "
+            "for the income statement/balance sheet/cash flow statement, and send "
+            "me the exact heading text so it can be added to the list."
         )
     return excerpt
 
